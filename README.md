@@ -51,6 +51,68 @@ The server starts on `http://localhost:3000`.
 
 On first run, navigate to `http://localhost:3000/setup` to create the admin account. You will be redirected automatically if no account exists yet.
 
+## Running as a systemd Service
+
+To have EasyDC start automatically on boot, create a systemd unit file.
+
+1. Copy the binary to a system path:
+
+```bash
+sudo cp easydc-linux-x86_64 /usr/local/bin/easydc
+sudo chmod +x /usr/local/bin/easydc
+```
+
+2. Create a dedicated user and working directory:
+
+```bash
+sudo useradd -r -s /bin/false easydc
+sudo mkdir -p /var/lib/easydc
+sudo chown easydc:easydc /var/lib/easydc
+```
+
+3. Create the service file:
+
+```bash
+sudo nano /etc/systemd/system/easydc.service
+```
+
+Paste the following:
+
+```ini
+[Unit]
+Description=EasyDC - Samba AD Management GUI
+After=network.target
+
+[Service]
+Type=simple
+User=easydc
+WorkingDirectory=/var/lib/easydc
+ExecStart=/usr/local/bin/easydc
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+4. Enable and start the service:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable easydc
+sudo systemctl start easydc
+```
+
+5. Check it is running:
+
+```bash
+sudo systemctl status easydc
+```
+
+The web interface will be available at `http://<server-ip>:3000`.
+
+> The SQLite database is stored in `/var/lib/easydc/easydc.db`.
+
 ## Adding a Server
 
 After logging in, click **Add Server** on the dashboard and fill in:
