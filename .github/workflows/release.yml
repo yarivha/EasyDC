@@ -76,6 +76,15 @@ jobs:
           VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/version *= *"//' | sed 's/"//')
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
+      - name: Extract changelog for this version
+        id: changelog
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
+          # Extract the block between this version's header and the next
+          NOTES=$(awk "/^## \[${VERSION}\]/{found=1; next} found && /^## \[/{exit} found{print}" CHANGELOG.md)
+          # Write to file to preserve newlines
+          echo "$NOTES" > release_notes.md
+
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
@@ -88,26 +97,7 @@ jobs:
           tag_name: ${{ github.ref_name }}
           draft: false
           prerelease: false
-          generate_release_notes: true
+          body_path: release_notes.md
           files: |
             artifacts/easydc-linux-x86_64/easydc-linux-x86_64
             artifacts/easydc-linux-arm64/easydc-linux-arm64
-          body: |
-            ## EasyDC v${{ steps.version.outputs.version }}
-
-            Web-based management GUI for Samba Active Directory Domain Controllers.
-
-            ### Downloads
-
-            | Platform | Binary |
-            |----------|--------|
-            | Linux x86_64 | `easydc-linux-x86_64` |
-            | Linux ARM64 | `easydc-linux-arm64` |
-
-            ### Usage
-
-            ```bash
-            chmod +x easydc-linux-x86_64
-            ./easydc-linux-x86_64
-            # Open http://localhost:3000
-            ```
