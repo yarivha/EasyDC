@@ -736,44 +736,25 @@ fn from_hex(s: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
-fn encode_dns_name(name: &str) -> Vec<u8> {
-    let mut out = Vec::new();
+// Samba stores name-based DNS records (PTR, NS, CNAME, MX) using DNS_RPC_NAME:
+// 1 byte length + dotted name string (no null terminator, no label encoding)
+fn encode_dns_rpc_name(name: &str) -> Vec<u8> {
     let name = name.trim_end_matches('.');
-    if name.is_empty() {
-        out.push(0);
-        return out;
-    }
-    for label in name.split('.') {
-        out.push(label.len() as u8);
-        out.extend_from_slice(label.as_bytes());
-    }
-    out.push(0);
+    let mut out = Vec::new();
+    out.push(name.len() as u8);
+    out.extend_from_slice(name.as_bytes());
     out
 }
 
-fn parse_dns_name_bytes(data: &[u8]) -> String {
-    let mut labels = Vec::new();
-    let mut pos = 0;
-    while pos < data.len() {
-        let len = data[pos] as usize;
-        if len == 0 {
-            break;
-        }
-        if len >= 64 {
-            break; // compression pointer or invalid
-        }
-        pos += 1;
-        if pos + len > data.len() {
-            break;
-        }
-        labels.push(String::from_utf8_lossy(&data[pos..pos + len]).to_string());
-        pos += len;
+fn parse_dns_rpc_name(data: &[u8]) -> String {
+    if data.is_empty() {
+        return ".".to_string();
     }
-    if labels.is_empty() {
-        ".".to_string()
-    } else {
-        labels.join(".")
+    let len = data[0] as usize;
+    if len == 0 || len + 1 > data.len() {
+        return ".".to_string();
     }
+    String::from_utf8_lossy(&data[1..1 + len]).to_string()
 }
 
 fn parse_txt_bytes(data: &[u8]) -> String {
@@ -814,13 +795,13 @@ fn parse_dns_record_binary(data: &[u8]) -> Option<(String, String, u32)> {
             let bytes: [u8; 16] = payload[..16].try_into().ok()?;
             ("AAAA".to_string(), std::net::Ipv6Addr::from(bytes).to_string())
         }
-        2 => ("NS".to_string(), parse_dns_name_bytes(payload)),
-        5 => ("CNAME".to_string(), parse_dns_name_bytes(payload)),
+        2 => ("NS".to_string(), parse_dns_rpc_name(payload)),
+        5 => ("CNAME".to_string(), parse_dns_rpc_name(payload)),
         6 => ("SOA".to_string(), "(zone authority)".to_string()),
-        12 => ("PTR".to_string(), parse_dns_name_bytes(payload)),
+        12 => ("PTR".to_string(), parse_dns_rpc_name(payload)),
         15 if payload.len() >= 2 => {
-            let priority = u16::from_be_bytes([payload[0], payload[1]]);
-            let name = parse_dns_name_bytes(&payload[2..]);
+            let priority = u16::from_le_bytes([payload[0], payload[1]]);
+            let name = parse_dns_rpc_name(&payload[2..]);
             ("MX".to_string(), format!("{} {}", priority, name))
         }
         16 => ("TXT".to_string(), parse_txt_bytes(payload)),
@@ -828,7 +809,7 @@ fn parse_dns_record_binary(data: &[u8]) -> Option<(String, String, u32)> {
             let priority = u16::from_be_bytes([payload[0], payload[1]]);
             let weight = u16::from_be_bytes([payload[2], payload[3]]);
             let port = u16::from_be_bytes([payload[4], payload[5]]);
-            let target = parse_dns_name_bytes(&payload[6..]);
+            let target = parse_dns_rpc_name(&payload[6..]);
             ("SRV".to_string(), format!("{} {} {} {}", priority, weight, port, target))
         }
         _ => (format!("TYPE{}", record_type), to_hex(payload)),
@@ -851,9 +832,9 @@ fn build_dns_record_binary(record_type: &str, value: &str, ttl: u32) -> LdapResu
                 .map_err(|_| format!("Invalid IPv6: {}", value))?;
             (28, addr.octets().to_vec())
         }
-        "NS" => (2, encode_dns_name(value)),
-        "CNAME" => (5, encode_dns_name(value)),
-        "PTR" => (12, encode_dns_name(value)),
+        "NS" => (2, encode_dns_rpc_name(value)),
+        "CNAME" => (5, encode_dns_rpc_name(value)),
+        "PTR" => (12, encode_dns_rpc_name(value)),
         "TXT" => {
             let bytes = value.as_bytes();
             let mut d = vec![bytes.len() as u8];
@@ -869,8 +850,8 @@ fn build_dns_record_binary(record_type: &str, value: &str, ttl: u32) -> LdapResu
             let name = parts
                 .get(1)
                 .ok_or_else(|| "MX format: <priority> <hostname>".to_string())?;
-            let mut d = priority.to_be_bytes().to_vec();
-            d.extend(encode_dns_name(name));
+            let mut d = priority.to_le_bytes().to_vec();
+            d.extend(encode_dns_rpc_name(name));
             (15, d)
         }
         _ => return Err(format!("Unsupported type: {}", record_type)),
@@ -1010,26 +991,29 @@ pub async fn list_dns_records(
             if name.is_empty() {
                 return None;
             }
-            let records: Vec<DnsRecord> = e
+            // ldap3 may lowercase attribute names; check both casings
+            let raw_records: Vec<Vec<u8>> = e
                 .bin_attrs
                 .get("dnsRecord")
-                .map(|recs| {
-                    recs.iter()
-                        .filter_map(|raw| {
-                            let (record_type, value, ttl) = parse_dns_record_binary(raw)?;
-                            Some(DnsRecord {
-                                node_name: name.clone(),
-                                record_type,
-                                value,
-                                ttl,
-                                raw_hex: to_hex(raw),
-                            })
-                        })
-                        .collect()
-                })
+                .or_else(|| e.bin_attrs.get("dnsrecord"))
+                .cloned()
                 .unwrap_or_default();
 
-            if records.is_empty() {
+            let records: Vec<DnsRecord> = raw_records
+                .iter()
+                .filter_map(|raw| {
+                    let (record_type, value, ttl) = parse_dns_record_binary(raw)?;
+                    Some(DnsRecord {
+                        node_name: name.clone(),
+                        record_type,
+                        value,
+                        ttl,
+                        raw_hex: to_hex(raw),
+                    })
+                })
+                .collect();
+
+            if records.is_empty() && raw_records.is_empty() {
                 None
             } else {
                 Some(DnsNode { name, records })

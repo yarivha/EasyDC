@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.5] - 2026-06-14
+
+### Fixed
+- PTR (and NS, CNAME, MX, SRV) records now display correctly — Samba stores name targets using DNS_RPC_NAME format (1-byte length prefix + dotted string), not DNS wire-format label encoding; parsing and building updated accordingly
+- `dnsRecord` attribute lookup is now case-insensitive — ldap3 may return it as `dnsrecord` depending on the server response
+- MX record priority now parsed as little-endian (matching MS-DNSP spec)
+- SRV record target field updated to use DNS_RPC_NAME parsing
+
 ## [0.1.4] - 2026-06-14
 
 ### Fixed
