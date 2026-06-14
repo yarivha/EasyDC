@@ -814,7 +814,8 @@ fn parse_dns_record_binary(data: &[u8]) -> Option<(String, String, u32)> {
     if record_type == 0 {
         return None; // tombstone record
     }
-    let ttl = u32::from_le_bytes([data[12], data[13], data[14], data[15]]);
+    // dwTtlSeconds is stored big-endian in dnsRecord (MS-DNSP / Samba quirk)
+    let ttl = u32::from_be_bytes([data[12], data[13], data[14], data[15]]);
     let end = std::cmp::min(24 + data_len, data.len());
     let payload = &data[24..end];
 
@@ -889,14 +890,22 @@ fn build_dns_record_binary(record_type: &str, value: &str, ttl: u32) -> LdapResu
         _ => return Err(format!("Unsupported type: {}", record_type)),
     };
 
+    // dnsp_DnssrvRpcRecord header (MS-DNSP, as Samba stores it in dnsRecord):
+    //   u16 wDataLength | u16 wType | u8 version | u8 rank | u16 flags |
+    //   u32 dwSerial | u32 dwTtlSeconds (BIG ENDIAN) | u32 dwReserved |
+    //   u32 dwTimeStamp | data…
+    // version must be 5 and rank must be 0xF0 (DNS_RANK_ZONE) or Samba will
+    // not treat the value as a live zone record (shows up as Records=0).
     let mut rec = Vec::new();
     rec.extend_from_slice(&(data.len() as u16).to_le_bytes()); // wDataLength
     rec.extend_from_slice(&rtype.to_le_bytes());               // wType
-    rec.extend_from_slice(&0x60000000u32.to_le_bytes());       // dwFlags
-    rec.extend_from_slice(&0u32.to_le_bytes());                // dwSerial
-    rec.extend_from_slice(&ttl.to_le_bytes());                 // dwTtlSeconds
-    rec.extend_from_slice(&0u32.to_le_bytes());                // dwTimeStamp
-    rec.extend_from_slice(&0u32.to_le_bytes());                // dwReserved
+    rec.push(5); // version
+    rec.push(0xF0); // rank = DNS_RANK_ZONE
+    rec.extend_from_slice(&0u16.to_le_bytes()); // flags
+    rec.extend_from_slice(&0u32.to_le_bytes()); // dwSerial
+    rec.extend_from_slice(&ttl.to_be_bytes()); // dwTtlSeconds (big-endian)
+    rec.extend_from_slice(&0u32.to_le_bytes()); // dwReserved
+    rec.extend_from_slice(&0u32.to_le_bytes()); // dwTimeStamp (0 = static)
     rec.extend(data);
     Ok(rec)
 }
@@ -1661,5 +1670,26 @@ mod dns_name_tests {
     fn roundtrip_ptr_target() {
         let name = "win10.hakim.family";
         assert_eq!(parse_dns_rpc_name(&encode_dns_rpc_name(name)), name);
+    }
+
+    #[test]
+    fn ptr_record_header_is_valid_zone_record() {
+        let rec = build_dns_record_binary("PTR", "easylog.hakim.family", 3600).unwrap();
+        // wType = 12 (PTR), little-endian
+        assert_eq!(u16::from_le_bytes([rec[2], rec[3]]), 12);
+        // version = 5, rank = DNS_RANK_ZONE (0xF0) — required or Samba shows Records=0
+        assert_eq!(rec[4], 5);
+        assert_eq!(rec[5], 0xF0);
+        // dwTtlSeconds is big-endian
+        assert_eq!(u32::from_be_bytes([rec[12], rec[13], rec[14], rec[15]]), 3600);
+    }
+
+    #[test]
+    fn ptr_record_roundtrips_through_parse() {
+        let rec = build_dns_record_binary("PTR", "easylog.hakim.family", 3600).unwrap();
+        let (rtype, value, ttl) = parse_dns_record_binary(&rec).unwrap();
+        assert_eq!(rtype, "PTR");
+        assert_eq!(value, "easylog.hakim.family");
+        assert_eq!(ttl, 3600);
     }
 }

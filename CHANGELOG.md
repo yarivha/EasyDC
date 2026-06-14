@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.7] - 2026-06-14
+
+### Fixed
+- DNS records written by EasyDC are now valid live zone records. The `dnsp_DnssrvRpcRecord` header was malformed: a bogus 4-byte `0x60000000` flags field left `version = 0` and `rank = 0`, so Samba stored the value but reported the node as `Records=0` (record not served, not visible). The header now sets `version = 5` and `rank = 0xF0` (`DNS_RANK_ZONE`) per MS-DNSP
+- `dwTtlSeconds` is now encoded and parsed as big-endian (MS-DNSP stores this field big-endian while the rest of the record is little-endian)
+- Added unit tests asserting the record header byte layout and a full build→parse round-trip
+
 ## [0.1.6] - 2026-06-14
 
 ### Fixed
