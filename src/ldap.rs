@@ -736,25 +736,57 @@ fn from_hex(s: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
-// Samba stores name-based DNS records (PTR, NS, CNAME, MX) using DNS_RPC_NAME:
-// 1 byte length + dotted name string (no null terminator, no label encoding)
+// Samba stores name-based DNS records (PTR, NS, CNAME, MX, SRV targets) using
+// the DNS_COUNT_NAME / dnsp_name format (MS-DNSP):
+//   [total_len: u8][label_count: u8] then for each label [len: u8][bytes] and
+//   a trailing 0x00 root byte. total_len is the byte length of the label
+//   section including the length bytes and the trailing null (i.e. everything
+//   after the count byte). e.g. "example.com" -> [13][2][7]example[3]com[0]
 fn encode_dns_rpc_name(name: &str) -> Vec<u8> {
     let name = name.trim_end_matches('.');
-    let mut out = Vec::new();
-    out.push(name.len() as u8);
-    out.extend_from_slice(name.as_bytes());
+    if name.is_empty() || name == "@" {
+        // root / apex: zero labels, just the trailing null
+        return vec![1, 0, 0];
+    }
+    let mut raw = Vec::new();
+    let mut count: u8 = 0;
+    for label in name.split('.') {
+        raw.push(label.len() as u8);
+        raw.extend_from_slice(label.as_bytes());
+        count += 1;
+    }
+    raw.push(0); // trailing root label
+    let mut out = Vec::with_capacity(raw.len() + 2);
+    out.push(raw.len() as u8); // total_len
+    out.push(count); // label count
+    out.extend_from_slice(&raw);
     out
 }
 
 fn parse_dns_rpc_name(data: &[u8]) -> String {
-    if data.is_empty() {
+    if data.len() < 2 {
         return ".".to_string();
     }
-    let len = data[0] as usize;
-    if len == 0 || len + 1 > data.len() {
-        return ".".to_string();
+    let count = data[1] as usize;
+    let mut pos = 2;
+    let mut labels = Vec::with_capacity(count);
+    for _ in 0..count {
+        if pos >= data.len() {
+            break;
+        }
+        let len = data[pos] as usize;
+        pos += 1;
+        if len == 0 || pos + len > data.len() {
+            break;
+        }
+        labels.push(String::from_utf8_lossy(&data[pos..pos + len]).to_string());
+        pos += len;
     }
-    String::from_utf8_lossy(&data[1..1 + len]).to_string()
+    if labels.is_empty() {
+        ".".to_string()
+    } else {
+        labels.join(".")
+    }
 }
 
 fn parse_txt_bytes(data: &[u8]) -> String {
@@ -806,9 +838,9 @@ fn parse_dns_record_binary(data: &[u8]) -> Option<(String, String, u32)> {
         }
         16 => ("TXT".to_string(), parse_txt_bytes(payload)),
         33 if payload.len() >= 6 => {
-            let priority = u16::from_be_bytes([payload[0], payload[1]]);
-            let weight = u16::from_be_bytes([payload[2], payload[3]]);
-            let port = u16::from_be_bytes([payload[4], payload[5]]);
+            let priority = u16::from_le_bytes([payload[0], payload[1]]);
+            let weight = u16::from_le_bytes([payload[2], payload[3]]);
+            let port = u16::from_le_bytes([payload[4], payload[5]]);
             let target = parse_dns_rpc_name(&payload[6..]);
             ("SRV".to_string(), format!("{} {} {} {}", priority, weight, port, target))
         }
@@ -1602,4 +1634,32 @@ pub async fn delete_dns_record(
         .success()
         .map_err(|e| format!("Failed to delete record: {}", e))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod dns_name_tests {
+    use super::*;
+
+    #[test]
+    fn encode_dnsp_name_matches_ms_dnsp_layout() {
+        // "example.com" -> [13][2][7]example[3]com[0]
+        let got = encode_dns_rpc_name("example.com");
+        let mut want = vec![13u8, 2, 7];
+        want.extend_from_slice(b"example");
+        want.push(3);
+        want.extend_from_slice(b"com");
+        want.push(0);
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn encode_strips_trailing_dot() {
+        assert_eq!(encode_dns_rpc_name("host.lan."), encode_dns_rpc_name("host.lan"));
+    }
+
+    #[test]
+    fn roundtrip_ptr_target() {
+        let name = "win10.hakim.family";
+        assert_eq!(parse_dns_rpc_name(&encode_dns_rpc_name(name)), name);
+    }
 }

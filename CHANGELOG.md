@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.6] - 2026-06-14
+
+### Fixed
+- PTR/NS/CNAME/MX/SRV records now use the correct DNS_COUNT_NAME (`dnsp_name`) wire format that Samba actually stores in the `dnsRecord` attribute: `[total_len][label_count][len]label…[0x00]`. The previous 0.1.5 encoding (`[len]dotted-string`) was rejected/garbled by Samba, so PTR records could not be added or displayed
+- SRV record integer fields (priority/weight/port) now parsed as little-endian (NDR default), matching MX
+- Added unit tests for DNS name encode/parse round-trip and exact byte layout
+
 ## [0.1.5] - 2026-06-14
 
 ### Fixed
