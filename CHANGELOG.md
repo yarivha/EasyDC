@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.4] - 2026-06-14
+
+### Fixed
+- DNS add/delete errors are now shown on the zone page instead of being silently ignored
+- PTR record form now shows the correct hint: node name should be the last octet only (e.g. `53`), not the full FQDN
+
 ## [0.1.3] - 2026-05-16
 
 ### Added

@@ -119,7 +119,8 @@
                     <div class="mb-3">
                         <label class="form-label">Name <span class="text-danger">*</span></label>
                         <input type="text" name="node_name" class="form-control font-monospace"
-                            required placeholder="@ for zone apex, or 'www', 'mail', …">
+                            required id="nodeNameInput" placeholder="@ for zone apex, or 'www', 'mail', …">
+                        <div class="form-text" id="nodeNameHint">@ for zone apex, or a relative label like <code>www</code></div>
                     </div>
                     <div class="mb-3">
                         <label class="form-label">Type <span class="text-danger">*</span></label>
@@ -155,19 +156,32 @@
 </div>
 
 <script>
-const hints = {
+const valueHints = {
     A:     'IPv4 address, e.g. 192.168.1.10',
     AAAA:  'IPv6 address, e.g. 2001:db8::1',
     CNAME: 'Target hostname, e.g. server.example.com',
     MX:    'Priority and hostname, e.g. 10 mail.example.com',
     TXT:   'Text value, e.g. v=spf1 include:example.com ~all',
-    PTR:   'Target hostname for reverse DNS',
+    PTR:   'Target FQDN, e.g. host.example.com',
     NS:    'Name server hostname, e.g. ns1.example.com',
 };
+const nodeHints = {
+    PTR:   'Last octet only, e.g. 53 (not the full IP or FQDN)',
+    A:     '@ for zone apex, or a label like www',
+    AAAA:  '@ for zone apex, or a label like www',
+    CNAME: 'Relative label, e.g. www',
+    MX:    '@ for zone apex',
+    TXT:   '@ for zone apex, or a label',
+    NS:    '@ for zone apex',
+};
 document.getElementById('recordTypeSelect').addEventListener('change', function () {
-    const hint = hints[this.value] || '';
-    document.getElementById('valueHint').textContent = hint;
-    document.getElementById('valueInput').placeholder = hint.split(',')[0];
+    const vHint = valueHints[this.value] || '';
+    document.getElementById('valueHint').textContent = vHint;
+    document.getElementById('valueInput').placeholder = vHint.split(',')[0];
+
+    const nHint = nodeHints[this.value] || '@ for zone apex, or a relative label like www';
+    document.getElementById('nodeNameHint').textContent = nHint;
+    document.getElementById('nodeNameInput').placeholder = this.value === 'PTR' ? '53' : '@';
 });
 </script>
 

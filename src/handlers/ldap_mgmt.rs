@@ -453,6 +453,41 @@ pub async fn dns(State(state): State<AppState>, Path(id): Path<i64>) -> Response
     Html(state.tera.render("dns.html", &ctx).unwrap_or_default()).into_response()
 }
 
+// ── DNS zone shared renderer ──────────────────────────────────────────────────
+
+async fn render_dns_zone(
+    state: &AppState,
+    server: &crate::models::Server,
+    zone_name: &str,
+    flash_error: Option<String>,
+) -> Response {
+    let mut ctx = Context::new();
+    ctx.insert("server", server);
+    ctx.insert("zone_name", zone_name);
+
+    let load_error = match ldap::open(server).await {
+        Err(e) => Some(e),
+        Ok((mut conn, base_dn)) => match ldap::find_zone_dn(&mut conn, &base_dn, zone_name).await {
+            Err(e) => Some(e),
+            Ok(zone_dn) => match ldap::list_dns_records(&mut conn, &zone_dn).await {
+                Err(e) => Some(e),
+                Ok(nodes) => {
+                    ctx.insert("nodes", &nodes);
+                    None
+                }
+            },
+        },
+    };
+
+    let error = flash_error.or(load_error);
+    if let Some(e) = error {
+        ctx.insert("error", &e);
+        ctx.insert("nodes", &Vec::<ldap::DnsNode>::new());
+    }
+
+    Html(state.tera.render("dns_zone.html", &ctx).unwrap_or_default()).into_response()
+}
+
 // ── DNS records in zone ───────────────────────────────────────────────────────
 
 pub async fn dns_zone(
@@ -463,38 +498,7 @@ pub async fn dns_zone(
         None => return redirect_home(),
         Some(s) => s,
     };
-
-    let mut ctx = Context::new();
-    ctx.insert("server", &server);
-    ctx.insert("zone_name", &zone_name);
-
-    match ldap::open(&server).await {
-        Err(e) => {
-            ctx.insert("error", &e);
-            ctx.insert("nodes", &Vec::<ldap::DnsNode>::new());
-        }
-        Ok((mut conn, base_dn)) => {
-            match ldap::find_zone_dn(&mut conn, &base_dn, &zone_name).await {
-                Err(e) => {
-                    ctx.insert("error", &e);
-                    ctx.insert("nodes", &Vec::<ldap::DnsNode>::new());
-                }
-                Ok(zone_dn) => {
-                    match ldap::list_dns_records(&mut conn, &zone_dn).await {
-                        Err(e) => {
-                            ctx.insert("error", &e);
-                            ctx.insert("nodes", &Vec::<ldap::DnsNode>::new());
-                        }
-                        Ok(nodes) => {
-                            ctx.insert("nodes", &nodes);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    Html(state.tera.render("dns_zone.html", &ctx).unwrap_or_default()).into_response()
+    render_dns_zone(&state, &server, &zone_name, None).await
 }
 
 // ── add DNS record ────────────────────────────────────────────────────────────
@@ -517,9 +521,11 @@ pub async fn dns_add_record(
         Some(s) => s,
     };
 
-    if let Ok((mut conn, base_dn)) = ldap::open(&server).await {
-        if let Ok(zone_dn) = ldap::find_zone_dn(&mut conn, &base_dn, &zone_name).await {
-            let _ = ldap::add_dns_record(
+    let result = match ldap::open(&server).await {
+        Err(e) => Err(e),
+        Ok((mut conn, base_dn)) => match ldap::find_zone_dn(&mut conn, &base_dn, &zone_name).await {
+            Err(e) => Err(e),
+            Ok(zone_dn) => ldap::add_dns_record(
                 &mut conn,
                 &zone_dn,
                 &form.node_name,
@@ -527,11 +533,14 @@ pub async fn dns_add_record(
                 &form.value,
                 form.ttl,
             )
-            .await;
-        }
-    }
+            .await,
+        },
+    };
 
-    Redirect::to(&format!("/servers/{}/dns/{}", id, zone_name)).into_response()
+    match result {
+        Ok(_) => Redirect::to(&format!("/servers/{}/dns/{}", id, zone_name)).into_response(),
+        Err(e) => render_dns_zone(&state, &server, &zone_name, Some(e)).await,
+    }
 }
 
 // ── delete DNS record ─────────────────────────────────────────────────────────
@@ -552,15 +561,20 @@ pub async fn dns_delete_record(
         Some(s) => s,
     };
 
-    if let Ok((mut conn, base_dn)) = ldap::open(&server).await {
-        if let Ok(zone_dn) = ldap::find_zone_dn(&mut conn, &base_dn, &zone_name).await {
-            let _ =
-                ldap::delete_dns_record(&mut conn, &zone_dn, &form.node_name, &form.raw_hex)
-                    .await;
-        }
-    }
+    let result = match ldap::open(&server).await {
+        Err(e) => Err(e),
+        Ok((mut conn, base_dn)) => match ldap::find_zone_dn(&mut conn, &base_dn, &zone_name).await {
+            Err(e) => Err(e),
+            Ok(zone_dn) => {
+                ldap::delete_dns_record(&mut conn, &zone_dn, &form.node_name, &form.raw_hex).await
+            }
+        },
+    };
 
-    Redirect::to(&format!("/servers/{}/dns/{}", id, zone_name)).into_response()
+    match result {
+        Ok(_) => Redirect::to(&format!("/servers/{}/dns/{}", id, zone_name)).into_response(),
+        Err(e) => render_dns_zone(&state, &server, &zone_name, Some(e)).await,
+    }
 }
 
 // ── GPO list ──────────────────────────────────────────────────────────────────
