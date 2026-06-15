@@ -6,7 +6,7 @@ use axum::{
 use serde::Deserialize;
 use tera::Context;
 
-use crate::{ldap, models::Server, AppState};
+use crate::{auth::CurrentUser, db, ldap, models::Server, AppState};
 
 // ── shared helpers ────────────────────────────────────────────────────────────
 
@@ -67,6 +67,7 @@ pub struct CreateGroupForm {
 
 pub async fn create_group(
     State(state): State<AppState>,
+    CurrentUser(actor): CurrentUser,
     Path(id): Path<i64>,
     Form(form): Form<CreateGroupForm>,
 ) -> Response {
@@ -75,8 +76,9 @@ pub async fn create_group(
         Some(s) => s,
     };
 
-    if let Ok((mut conn, base_dn)) = ldap::open(&server).await {
-        let _ = ldap::create_group(
+    let result: Result<(), String> = async {
+        let (mut conn, base_dn) = ldap::open(&server).await?;
+        ldap::create_group(
             &mut conn,
             &base_dn,
             &ldap::NewGroup {
@@ -85,8 +87,10 @@ pub async fn create_group(
                 group_type: form.group_type,
             },
         )
-        .await;
+        .await
     }
+    .await;
+    db::log_action(&state.db, &actor, "group.create", &form.name, Some(id), &result).await;
 
     Redirect::to(&format!("/servers/{}/groups", id)).into_response()
 }
@@ -100,6 +104,7 @@ pub struct UpdateGroupForm {
 
 pub async fn update_group(
     State(state): State<AppState>,
+    CurrentUser(actor): CurrentUser,
     Path((id, name)): Path<(i64, String)>,
     Form(form): Form<UpdateGroupForm>,
 ) -> Response {
@@ -108,8 +113,9 @@ pub async fn update_group(
         Some(s) => s,
     };
 
-    if let Ok((mut conn, base_dn)) = ldap::open(&server).await {
-        let _ = ldap::update_group(
+    let result: Result<(), String> = async {
+        let (mut conn, base_dn) = ldap::open(&server).await?;
+        ldap::update_group(
             &mut conn,
             &base_dn,
             &name,
@@ -117,8 +123,10 @@ pub async fn update_group(
                 description: &form.description,
             },
         )
-        .await;
+        .await
     }
+    .await;
+    db::log_action(&state.db, &actor, "group.update", &name, Some(id), &result).await;
 
     Redirect::to(&format!("/servers/{}/groups", id)).into_response()
 }
@@ -127,6 +135,7 @@ pub async fn update_group(
 
 pub async fn delete_group(
     State(state): State<AppState>,
+    CurrentUser(actor): CurrentUser,
     Path((id, name)): Path<(i64, String)>,
 ) -> Response {
     let server = match get_server(&state, id).await {
@@ -134,9 +143,12 @@ pub async fn delete_group(
         Some(s) => s,
     };
 
-    if let Ok((mut conn, base_dn)) = ldap::open(&server).await {
-        let _ = ldap::delete_group(&mut conn, &base_dn, &name).await;
+    let result: Result<(), String> = async {
+        let (mut conn, base_dn) = ldap::open(&server).await?;
+        ldap::delete_group(&mut conn, &base_dn, &name).await
     }
+    .await;
+    db::log_action(&state.db, &actor, "group.delete", &name, Some(id), &result).await;
 
     Redirect::to(&format!("/servers/{}/groups", id)).into_response()
 }
@@ -184,6 +196,7 @@ pub struct AddMemberForm {
 
 pub async fn add_member(
     State(state): State<AppState>,
+    CurrentUser(actor): CurrentUser,
     Path((id, group_name)): Path<(i64, String)>,
     Form(form): Form<AddMemberForm>,
 ) -> Response {
@@ -192,15 +205,20 @@ pub async fn add_member(
         Some(s) => s,
     };
 
-    if let Ok((mut conn, base_dn)) = ldap::open(&server).await {
-        let _ = ldap::add_group_member(&mut conn, &base_dn, &group_name, &form.username).await;
+    let result: Result<(), String> = async {
+        let (mut conn, base_dn) = ldap::open(&server).await?;
+        ldap::add_group_member(&mut conn, &base_dn, &group_name, &form.username).await
     }
+    .await;
+    let target = format!("{} → {}", form.username, group_name);
+    db::log_action(&state.db, &actor, "group.add_member", &target, Some(id), &result).await;
 
     Redirect::to(&format!("/servers/{}/groups/{}/members", id, group_name)).into_response()
 }
 
 pub async fn remove_member(
     State(state): State<AppState>,
+    CurrentUser(actor): CurrentUser,
     Path((id, group_name, username)): Path<(i64, String, String)>,
 ) -> Response {
     let server = match get_server(&state, id).await {
@@ -208,10 +226,13 @@ pub async fn remove_member(
         Some(s) => s,
     };
 
-    if let Ok((mut conn, base_dn)) = ldap::open(&server).await {
-        let _ =
-            ldap::remove_group_member(&mut conn, &base_dn, &group_name, &username).await;
+    let result: Result<(), String> = async {
+        let (mut conn, base_dn) = ldap::open(&server).await?;
+        ldap::remove_group_member(&mut conn, &base_dn, &group_name, &username).await
     }
+    .await;
+    let target = format!("{} ✕ {}", username, group_name);
+    db::log_action(&state.db, &actor, "group.remove_member", &target, Some(id), &result).await;
 
     Redirect::to(&format!("/servers/{}/groups/{}/members", id, group_name)).into_response()
 }
@@ -246,6 +267,7 @@ pub async fn computers(State(state): State<AppState>, Path(id): Path<i64>) -> Re
 
 pub async fn delete_computer(
     State(state): State<AppState>,
+    CurrentUser(actor): CurrentUser,
     Path((id, name)): Path<(i64, String)>,
 ) -> Response {
     let server = match get_server(&state, id).await {
@@ -253,15 +275,19 @@ pub async fn delete_computer(
         Some(s) => s,
     };
 
-    if let Ok((mut conn, base_dn)) = ldap::open(&server).await {
-        let _ = ldap::delete_computer(&mut conn, &base_dn, &name).await;
+    let result: Result<(), String> = async {
+        let (mut conn, base_dn) = ldap::open(&server).await?;
+        ldap::delete_computer(&mut conn, &base_dn, &name).await
     }
+    .await;
+    db::log_action(&state.db, &actor, "computer.delete", &name, Some(id), &result).await;
 
     Redirect::to(&format!("/servers/{}/computers", id)).into_response()
 }
 
 pub async fn toggle_computer(
     State(state): State<AppState>,
+    CurrentUser(actor): CurrentUser,
     Path((id, name)): Path<(i64, String)>,
     Form(form): Form<ToggleForm>,
 ) -> Response {
@@ -271,9 +297,13 @@ pub async fn toggle_computer(
     };
 
     let enable = form.enable == "true";
-    if let Ok((mut conn, base_dn)) = ldap::open(&server).await {
-        let _ = ldap::set_computer_enabled(&mut conn, &base_dn, &name, enable).await;
+    let result: Result<(), String> = async {
+        let (mut conn, base_dn) = ldap::open(&server).await?;
+        ldap::set_computer_enabled(&mut conn, &base_dn, &name, enable).await
     }
+    .await;
+    let action = if enable { "computer.enable" } else { "computer.disable" };
+    db::log_action(&state.db, &actor, action, &name, Some(id), &result).await;
 
     Redirect::to(&format!("/servers/{}/computers", id)).into_response()
 }
@@ -334,6 +364,7 @@ pub struct CreateOuForm {
 
 pub async fn ou_create(
     State(state): State<AppState>,
+    CurrentUser(actor): CurrentUser,
     Path(id): Path<i64>,
     Form(form): Form<CreateOuForm>,
 ) -> Response {
@@ -342,9 +373,13 @@ pub async fn ou_create(
         Some(s) => s,
     };
 
-    if let Ok((mut conn, _)) = ldap::open(&server).await {
-        let _ = ldap::create_ou(&mut conn, &form.parent_dn, &form.name, &form.description).await;
+    let result: Result<(), String> = async {
+        let (mut conn, _) = ldap::open(&server).await?;
+        ldap::create_ou(&mut conn, &form.parent_dn, &form.name, &form.description).await
     }
+    .await;
+    let target = format!("OU={},{}", form.name, form.parent_dn);
+    db::log_action(&state.db, &actor, "ou.create", &target, Some(id), &result).await;
 
     Redirect::to(&format!("/servers/{}/ous", id)).into_response()
 }
@@ -359,6 +394,7 @@ pub struct RenameOuForm {
 
 pub async fn ou_rename(
     State(state): State<AppState>,
+    CurrentUser(actor): CurrentUser,
     Path(id): Path<i64>,
     Form(form): Form<RenameOuForm>,
 ) -> Response {
@@ -367,9 +403,13 @@ pub async fn ou_rename(
         Some(s) => s,
     };
 
-    if let Ok((mut conn, _)) = ldap::open(&server).await {
-        let _ = ldap::rename_ou(&mut conn, &form.ou_dn, &form.new_name).await;
+    let result: Result<(), String> = async {
+        let (mut conn, _) = ldap::open(&server).await?;
+        ldap::rename_ou(&mut conn, &form.ou_dn, &form.new_name).await
     }
+    .await;
+    let target = format!("{} → {}", form.ou_dn, form.new_name);
+    db::log_action(&state.db, &actor, "ou.rename", &target, Some(id), &result).await;
 
     Redirect::to(&format!("/servers/{}/ous", id)).into_response()
 }
@@ -383,6 +423,7 @@ pub struct DeleteOuForm {
 
 pub async fn ou_delete(
     State(state): State<AppState>,
+    CurrentUser(actor): CurrentUser,
     Path(id): Path<i64>,
     Form(form): Form<DeleteOuForm>,
 ) -> Response {
@@ -391,9 +432,12 @@ pub async fn ou_delete(
         Some(s) => s,
     };
 
-    if let Ok((mut conn, _)) = ldap::open(&server).await {
-        let _ = ldap::delete_ou(&mut conn, &form.ou_dn).await;
+    let result: Result<(), String> = async {
+        let (mut conn, _) = ldap::open(&server).await?;
+        ldap::delete_ou(&mut conn, &form.ou_dn).await
     }
+    .await;
+    db::log_action(&state.db, &actor, "ou.delete", &form.ou_dn, Some(id), &result).await;
 
     Redirect::to(&format!("/servers/{}/ous", id)).into_response()
 }
@@ -408,6 +452,7 @@ pub struct MoveObjectForm {
 
 pub async fn ou_move_object(
     State(state): State<AppState>,
+    CurrentUser(actor): CurrentUser,
     Path(id): Path<i64>,
     Form(form): Form<MoveObjectForm>,
 ) -> Response {
@@ -416,9 +461,13 @@ pub async fn ou_move_object(
         Some(s) => s,
     };
 
-    if let Ok((mut conn, base_dn)) = ldap::open(&server).await {
-        let _ = ldap::move_object_to_ou(&mut conn, &base_dn, &form.sam_account, &form.target_ou_dn).await;
+    let result: Result<(), String> = async {
+        let (mut conn, base_dn) = ldap::open(&server).await?;
+        ldap::move_object_to_ou(&mut conn, &base_dn, &form.sam_account, &form.target_ou_dn).await
     }
+    .await;
+    let target = format!("{} → {}", form.sam_account, form.target_ou_dn);
+    db::log_action(&state.db, &actor, "ou.move_object", &target, Some(id), &result).await;
 
     Redirect::to(&format!("/servers/{}/ous", id)).into_response()
 }
@@ -513,6 +562,7 @@ pub struct AddDnsRecordForm {
 
 pub async fn dns_add_record(
     State(state): State<AppState>,
+    CurrentUser(actor): CurrentUser,
     Path((id, zone_name)): Path<(i64, String)>,
     Form(form): Form<AddDnsRecordForm>,
 ) -> Response {
@@ -537,6 +587,9 @@ pub async fn dns_add_record(
         },
     };
 
+    let target = format!("{} {} {} ({})", zone_name, form.node_name, form.record_type, form.value);
+    db::log_action(&state.db, &actor, "dns.add_record", &target, Some(id), &result).await;
+
     match result {
         Ok(_) => Redirect::to(&format!("/servers/{}/dns/{}", id, zone_name)).into_response(),
         Err(e) => render_dns_zone(&state, &server, &zone_name, Some(e)).await,
@@ -553,6 +606,7 @@ pub struct DeleteDnsRecordForm {
 
 pub async fn dns_delete_record(
     State(state): State<AppState>,
+    CurrentUser(actor): CurrentUser,
     Path((id, zone_name)): Path<(i64, String)>,
     Form(form): Form<DeleteDnsRecordForm>,
 ) -> Response {
@@ -570,6 +624,9 @@ pub async fn dns_delete_record(
             }
         },
     };
+
+    let target = format!("{} {}", zone_name, form.node_name);
+    db::log_action(&state.db, &actor, "dns.delete_record", &target, Some(id), &result).await;
 
     match result {
         Ok(_) => Redirect::to(&format!("/servers/{}/dns/{}", id, zone_name)).into_response(),
@@ -616,6 +673,7 @@ pub struct CreateGpoForm {
 
 pub async fn gpo_create(
     State(state): State<AppState>,
+    CurrentUser(actor): CurrentUser,
     Path(id): Path<i64>,
     Form(form): Form<CreateGpoForm>,
 ) -> Response {
@@ -624,9 +682,12 @@ pub async fn gpo_create(
         Some(s) => s,
     };
 
-    if let Ok((mut conn, base_dn)) = ldap::open(&server).await {
-        let _ = ldap::create_gpo(&mut conn, &base_dn, &form.display_name).await;
+    let result: Result<(), String> = async {
+        let (mut conn, base_dn) = ldap::open(&server).await?;
+        ldap::create_gpo(&mut conn, &base_dn, &form.display_name).await
     }
+    .await;
+    db::log_action(&state.db, &actor, "gpo.create", &form.display_name, Some(id), &result).await;
 
     Redirect::to(&format!("/servers/{}/gpo", id)).into_response()
 }
@@ -641,6 +702,7 @@ pub struct UpdateGpoForm {
 
 pub async fn gpo_update(
     State(state): State<AppState>,
+    CurrentUser(actor): CurrentUser,
     Path((id, guid)): Path<(i64, String)>,
     Form(form): Form<UpdateGpoForm>,
 ) -> Response {
@@ -649,10 +711,13 @@ pub async fn gpo_update(
         Some(s) => s,
     };
 
-    if let Ok((mut conn, base_dn)) = ldap::open(&server).await {
+    let result: Result<(), String> = async {
+        let (mut conn, base_dn) = ldap::open(&server).await?;
         let gpo_dn = format!("CN={{{}}},CN=Policies,CN=System,{}", guid.to_uppercase(), base_dn);
-        let _ = ldap::update_gpo(&mut conn, &gpo_dn, &form.display_name, form.flags).await;
+        ldap::update_gpo(&mut conn, &gpo_dn, &form.display_name, form.flags).await
     }
+    .await;
+    db::log_action(&state.db, &actor, "gpo.update", &form.display_name, Some(id), &result).await;
 
     Redirect::to(&format!("/servers/{}/gpo", id)).into_response()
 }
@@ -661,6 +726,7 @@ pub async fn gpo_update(
 
 pub async fn gpo_delete(
     State(state): State<AppState>,
+    CurrentUser(actor): CurrentUser,
     Path((id, guid)): Path<(i64, String)>,
 ) -> Response {
     let server = match get_server(&state, id).await {
@@ -668,10 +734,13 @@ pub async fn gpo_delete(
         Some(s) => s,
     };
 
-    if let Ok((mut conn, base_dn)) = ldap::open(&server).await {
+    let result: Result<(), String> = async {
+        let (mut conn, base_dn) = ldap::open(&server).await?;
         let gpo_dn = format!("CN={{{}}},CN=Policies,CN=System,{}", guid.to_uppercase(), base_dn);
-        let _ = ldap::delete_gpo(&mut conn, &gpo_dn).await;
+        ldap::delete_gpo(&mut conn, &gpo_dn).await
     }
+    .await;
+    db::log_action(&state.db, &actor, "gpo.delete", &guid, Some(id), &result).await;
 
     Redirect::to(&format!("/servers/{}/gpo", id)).into_response()
 }
@@ -733,6 +802,7 @@ pub struct GpoLinkForm {
 
 pub async fn gpo_link_add(
     State(state): State<AppState>,
+    CurrentUser(actor): CurrentUser,
     Path((id, guid)): Path<(i64, String)>,
     Form(form): Form<GpoLinkForm>,
 ) -> Response {
@@ -741,10 +811,14 @@ pub async fn gpo_link_add(
         Some(s) => s,
     };
 
-    if let Ok((mut conn, base_dn)) = ldap::open(&server).await {
+    let result: Result<(), String> = async {
+        let (mut conn, base_dn) = ldap::open(&server).await?;
         let gpo_dn = format!("CN={{{}}},CN=Policies,CN=System,{}", guid.to_uppercase(), base_dn);
-        let _ = ldap::link_gpo_to_ou(&mut conn, &form.ou_dn, &gpo_dn).await;
+        ldap::link_gpo_to_ou(&mut conn, &form.ou_dn, &gpo_dn).await
     }
+    .await;
+    let target = format!("{} → {}", guid, form.ou_dn);
+    db::log_action(&state.db, &actor, "gpo.link", &target, Some(id), &result).await;
 
     Redirect::to(&format!("/servers/{}/gpo/{}/links", id, guid)).into_response()
 }
@@ -753,6 +827,7 @@ pub async fn gpo_link_add(
 
 pub async fn gpo_link_remove(
     State(state): State<AppState>,
+    CurrentUser(actor): CurrentUser,
     Path((id, guid)): Path<(i64, String)>,
     Form(form): Form<GpoLinkForm>,
 ) -> Response {
@@ -761,10 +836,14 @@ pub async fn gpo_link_remove(
         Some(s) => s,
     };
 
-    if let Ok((mut conn, base_dn)) = ldap::open(&server).await {
+    let result: Result<(), String> = async {
+        let (mut conn, base_dn) = ldap::open(&server).await?;
         let gpo_dn = format!("CN={{{}}},CN=Policies,CN=System,{}", guid.to_uppercase(), base_dn);
-        let _ = ldap::unlink_gpo_from_ou(&mut conn, &form.ou_dn, &gpo_dn).await;
+        ldap::unlink_gpo_from_ou(&mut conn, &form.ou_dn, &gpo_dn).await
     }
+    .await;
+    let target = format!("{} ✕ {}", guid, form.ou_dn);
+    db::log_action(&state.db, &actor, "gpo.unlink", &target, Some(id), &result).await;
 
     Redirect::to(&format!("/servers/{}/gpo/{}/links", id, guid)).into_response()
 }
@@ -812,6 +891,7 @@ pub struct CreateUserForm {
 
 pub async fn create_user(
     State(state): State<AppState>,
+    CurrentUser(actor): CurrentUser,
     Path(id): Path<i64>,
     Form(form): Form<CreateUserForm>,
 ) -> Response {
@@ -820,8 +900,9 @@ pub async fn create_user(
         Some(s) => s,
     };
 
-    if let Ok((mut conn, base_dn)) = ldap::open(&server).await {
-        let _ = ldap::create_user(
+    let result: Result<(), String> = async {
+        let (mut conn, base_dn) = ldap::open(&server).await?;
+        ldap::create_user(
             &mut conn,
             &base_dn,
             &ldap::NewUser {
@@ -832,8 +913,10 @@ pub async fn create_user(
                 password: &form.password,
             },
         )
-        .await;
+        .await
     }
+    .await;
+    db::log_action(&state.db, &actor, "user.create", &form.username, Some(id), &result).await;
 
     redirect_users(id)
 }
@@ -850,6 +933,7 @@ pub struct UpdateUserForm {
 
 pub async fn update_user(
     State(state): State<AppState>,
+    CurrentUser(actor): CurrentUser,
     Path((id, username)): Path<(i64, String)>,
     Form(form): Form<UpdateUserForm>,
 ) -> Response {
@@ -858,8 +942,9 @@ pub async fn update_user(
         Some(s) => s,
     };
 
-    if let Ok((mut conn, base_dn)) = ldap::open(&server).await {
-        let _ = ldap::update_user(
+    let result: Result<(), String> = async {
+        let (mut conn, base_dn) = ldap::open(&server).await?;
+        ldap::update_user(
             &mut conn,
             &base_dn,
             &username,
@@ -870,8 +955,10 @@ pub async fn update_user(
                 password: &form.password,
             },
         )
-        .await;
+        .await
     }
+    .await;
+    db::log_action(&state.db, &actor, "user.update", &username, Some(id), &result).await;
 
     redirect_users(id)
 }
@@ -880,6 +967,7 @@ pub async fn update_user(
 
 pub async fn delete_user(
     State(state): State<AppState>,
+    CurrentUser(actor): CurrentUser,
     Path((id, username)): Path<(i64, String)>,
 ) -> Response {
     let server = match get_server(&state, id).await {
@@ -887,9 +975,12 @@ pub async fn delete_user(
         Some(s) => s,
     };
 
-    if let Ok((mut conn, base_dn)) = ldap::open(&server).await {
-        let _ = ldap::delete_user(&mut conn, &base_dn, &username).await;
+    let result: Result<(), String> = async {
+        let (mut conn, base_dn) = ldap::open(&server).await?;
+        ldap::delete_user(&mut conn, &base_dn, &username).await
     }
+    .await;
+    db::log_action(&state.db, &actor, "user.delete", &username, Some(id), &result).await;
 
     redirect_users(id)
 }
@@ -903,6 +994,7 @@ pub struct ToggleForm {
 
 pub async fn toggle_user(
     State(state): State<AppState>,
+    CurrentUser(actor): CurrentUser,
     Path((id, username)): Path<(i64, String)>,
     Form(form): Form<ToggleForm>,
 ) -> Response {
@@ -912,9 +1004,69 @@ pub async fn toggle_user(
     };
 
     let enable = form.enable == "true";
-    if let Ok((mut conn, base_dn)) = ldap::open(&server).await {
-        let _ = ldap::set_user_enabled(&mut conn, &base_dn, &username, enable).await;
+    let result: Result<(), String> = async {
+        let (mut conn, base_dn) = ldap::open(&server).await?;
+        ldap::set_user_enabled(&mut conn, &base_dn, &username, enable).await
     }
+    .await;
+    let action = if enable { "user.enable" } else { "user.disable" };
+    db::log_action(&state.db, &actor, action, &username, Some(id), &result).await;
+
+    redirect_users(id)
+}
+
+// ── reset password ─────────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct ResetPasswordForm {
+    pub password: String,
+    #[serde(default)]
+    pub force_change: Option<String>, // checkbox sends "on" when ticked
+}
+
+pub async fn reset_password(
+    State(state): State<AppState>,
+    CurrentUser(actor): CurrentUser,
+    Path((id, username)): Path<(i64, String)>,
+    Form(form): Form<ResetPasswordForm>,
+) -> Response {
+    let server = match get_server(&state, id).await {
+        None => return redirect_home(),
+        Some(s) => s,
+    };
+
+    let force_change = form.force_change.is_some();
+    let result: Result<(), String> = async {
+        if form.password.is_empty() {
+            return Err("Password cannot be empty".to_string());
+        }
+        let (mut conn, base_dn) = ldap::open(&server).await?;
+        ldap::reset_password(&mut conn, &base_dn, &username, &form.password, force_change).await
+    }
+    .await;
+    db::log_action(&state.db, &actor, "user.reset_password", &username, Some(id), &result).await;
+
+    redirect_users(id)
+}
+
+// ── unlock account ─────────────────────────────────────────────────────────────
+
+pub async fn unlock_user(
+    State(state): State<AppState>,
+    CurrentUser(actor): CurrentUser,
+    Path((id, username)): Path<(i64, String)>,
+) -> Response {
+    let server = match get_server(&state, id).await {
+        None => return redirect_home(),
+        Some(s) => s,
+    };
+
+    let result: Result<(), String> = async {
+        let (mut conn, base_dn) = ldap::open(&server).await?;
+        ldap::unlock_user(&mut conn, &base_dn, &username).await
+    }
+    .await;
+    db::log_action(&state.db, &actor, "user.unlock", &username, Some(id), &result).await;
 
     redirect_users(id)
 }

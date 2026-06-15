@@ -6,7 +6,16 @@ use axum::{
 use serde::Deserialize;
 use tera::Context;
 
-use crate::{models::Server, AppState};
+use crate::{auth::CurrentUser, db, models::Server, AppState};
+
+// ── audit log view ─────────────────────────────────────────────────────────────
+
+pub async fn audit(State(state): State<AppState>) -> impl IntoResponse {
+    let entries = db::recent_audit(&state.db, 500).await.unwrap_or_default();
+    let mut ctx = Context::new();
+    ctx.insert("entries", &entries);
+    Html(state.tera.render("audit.html", &ctx).unwrap_or_default())
+}
 
 pub async fn dashboard(State(state): State<AppState>) -> impl IntoResponse {
     let servers = sqlx::query_as::<_, Server>("SELECT * FROM servers ORDER BY name")
@@ -50,10 +59,11 @@ pub struct ServerForm {
 
 pub async fn create_server(
     State(state): State<AppState>,
+    CurrentUser(actor): CurrentUser,
     Form(form): Form<ServerForm>,
 ) -> impl IntoResponse {
     let skip_tls = form.skip_tls.is_some();
-    sqlx::query(
+    let res = sqlx::query(
         "INSERT INTO servers (name, ldap_url, bind_dn, bind_password, skip_tls) VALUES (?, ?, ?, ?, ?)",
     )
     .bind(&form.name)
@@ -62,8 +72,10 @@ pub async fn create_server(
     .bind(&form.bind_password)
     .bind(skip_tls)
     .execute(&state.db)
-    .await
-    .unwrap();
+    .await;
+
+    let result = res.map(|_| ()).map_err(|e| e.to_string());
+    db::log_action(&state.db, &actor, "server.create", &form.name, None, &result).await;
 
     Redirect::to("/")
 }
@@ -79,12 +91,13 @@ pub struct UpdateServerForm {
 
 pub async fn update_server(
     State(state): State<AppState>,
+    CurrentUser(actor): CurrentUser,
     Path(id): Path<i64>,
     Form(form): Form<UpdateServerForm>,
 ) -> impl IntoResponse {
     let skip_tls = form.skip_tls.is_some();
 
-    if form.bind_password.is_empty() {
+    let res = if form.bind_password.is_empty() {
         sqlx::query(
             "UPDATE servers SET name=?, ldap_url=?, bind_dn=?, skip_tls=? WHERE id=?",
         )
@@ -95,7 +108,6 @@ pub async fn update_server(
         .bind(id)
         .execute(&state.db)
         .await
-        .unwrap();
     } else {
         sqlx::query(
             "UPDATE servers SET name=?, ldap_url=?, bind_dn=?, bind_password=?, skip_tls=? WHERE id=?",
@@ -108,21 +120,26 @@ pub async fn update_server(
         .bind(id)
         .execute(&state.db)
         .await
-        .unwrap();
-    }
+    };
+
+    let result = res.map(|_| ()).map_err(|e| e.to_string());
+    db::log_action(&state.db, &actor, "server.update", &form.name, Some(id), &result).await;
 
     Redirect::to("/")
 }
 
 pub async fn delete_server(
     State(state): State<AppState>,
+    CurrentUser(actor): CurrentUser,
     Path(id): Path<i64>,
 ) -> impl IntoResponse {
-    sqlx::query("DELETE FROM servers WHERE id = ?")
+    let res = sqlx::query("DELETE FROM servers WHERE id = ?")
         .bind(id)
         .execute(&state.db)
-        .await
-        .unwrap();
+        .await;
+
+    let result = res.map(|_| ()).map_err(|e| e.to_string());
+    db::log_action(&state.db, &actor, "server.delete", &id.to_string(), Some(id), &result).await;
 
     Redirect::to("/")
 }

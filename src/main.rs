@@ -37,11 +37,20 @@ async fn main() {
     db::init_tables(&pool).await.expect("Failed to initialize database");
 
     let mut tera = Tera::default();
-    for path in Templates::iter() {
-        let content = Templates::get(&path).unwrap();
-        let source = std::str::from_utf8(content.data.as_ref()).expect("Template is not valid UTF-8");
-        tera.add_raw_template(&path, source).expect("Failed to load template");
-    }
+    // Collect all templates first, then register them together so template
+    // inheritance (e.g. {% extends "base.html" %}) resolves regardless of the
+    // order rust-embed iterates files in.
+    let raw: Vec<(String, String)> = Templates::iter()
+        .map(|path| {
+            let content = Templates::get(&path).unwrap();
+            let source = std::str::from_utf8(content.data.as_ref())
+                .expect("Template is not valid UTF-8")
+                .to_string();
+            (path.to_string(), source)
+        })
+        .collect();
+    tera.add_raw_templates(raw.iter().map(|(n, s)| (n.as_str(), s.as_str())))
+        .expect("Failed to load templates");
     tera.register_function("app_version", |_: &std::collections::HashMap<String, tera::Value>| {
         Ok(tera::Value::String(env!("CARGO_PKG_VERSION").to_string()))
     });
@@ -57,6 +66,7 @@ async fn main() {
 
     let protected = Router::new()
         .route("/", get(handlers::servers::dashboard))
+        .route("/audit", get(handlers::servers::audit))
         .route("/logout", post(handlers::auth_handlers::logout))
         .route("/servers/new", post(handlers::servers::create_server))
         .route("/servers/:id", get(handlers::servers::server_detail))
@@ -67,6 +77,8 @@ async fn main() {
         .route("/servers/:id/users/:username/edit", post(handlers::ldap_mgmt::update_user))
         .route("/servers/:id/users/:username/delete", post(handlers::ldap_mgmt::delete_user))
         .route("/servers/:id/users/:username/toggle", post(handlers::ldap_mgmt::toggle_user))
+        .route("/servers/:id/users/:username/reset-password", post(handlers::ldap_mgmt::reset_password))
+        .route("/servers/:id/users/:username/unlock", post(handlers::ldap_mgmt::unlock_user))
         .route("/servers/:id/groups", get(handlers::ldap_mgmt::groups))
         .route("/servers/:id/groups/new", post(handlers::ldap_mgmt::create_group))
         .route("/servers/:id/groups/:name/edit", post(handlers::ldap_mgmt::update_group))

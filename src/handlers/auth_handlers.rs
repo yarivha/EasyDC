@@ -55,9 +55,10 @@ pub async fn post_login(
         .unwrap()
         .as_secs() as i64;
 
-    sqlx::query("INSERT INTO sessions (token, created_at) VALUES (?, ?)")
+    sqlx::query("INSERT INTO sessions (token, created_at, username) VALUES (?, ?, ?)")
         .bind(&token)
         .bind(now)
+        .bind(&form.username)
         .execute(&state.db)
         .await
         .unwrap();

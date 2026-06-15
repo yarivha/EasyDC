@@ -9,3 +9,16 @@ pub struct Server {
     pub bind_password: String,
     pub skip_tls: bool,
 }
+
+#[derive(Debug, sqlx::FromRow, Serialize)]
+pub struct AuditEntry {
+    pub id: i64,
+    pub ts: i64,
+    pub actor: String,
+    pub action: String,
+    pub target: String,
+    pub server_id: Option<i64>,
+    pub server_name: Option<String>,
+    pub result: String,
+    pub detail: Option<String>,
+}

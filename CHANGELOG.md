@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.0] - 2026-06-15
+
+### Added
+- **Password reset** — dedicated "Reset Password" action on each user with a "must change password at next logon" option (checked by default). Sets `unicodePwd` + `pwdLastSet` (requires LDAPS)
+- **Account unlock & lockout status** — users now show a "Locked" badge (with bad-password-attempt count) when locked out; a one-click Unlock button clears `lockoutTime`
+- **Audit log** — every state-changing action (users, password resets, unlocks, groups, OUs, computers, DNS, GPO, servers) is recorded with actor, action, target, server, result, and timestamp. Viewable at `/audit` with a client-side filter; failures are logged with their error detail
+
+### Changed
+- Login now records the authenticated username on the session so actions can be attributed in the audit log (`sessions.username` added via automatic migration)
+- Templates are now registered together at startup so inheritance resolves regardless of file order
+
 ## [0.1.7] - 2026-06-14
 
 ### Fixed

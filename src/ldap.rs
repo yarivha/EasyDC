@@ -16,6 +16,8 @@ pub struct LdapUser {
     pub display_name: String,
     pub email: String,
     pub enabled: bool,
+    pub locked: bool,
+    pub bad_pwd_count: i64,
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -125,6 +127,8 @@ pub async fn list_users(ldap: &mut ldap3::Ldap, base_dn: &str) -> LdapResult<Vec
                 "displayName",
                 "mail",
                 "userAccountControl",
+                "lockoutTime",
+                "badPwdCount",
             ],
         )
         .await
@@ -137,6 +141,9 @@ pub async fn list_users(ldap: &mut ldap3::Ldap, base_dn: &str) -> LdapResult<Vec
         .map(|e| {
             let e = SearchEntry::construct(e);
             let uac: i64 = attr(&e, "userAccountControl").parse().unwrap_or(514);
+            // lockoutTime is a FILETIME; any non-zero value means the account
+            // is currently locked out.
+            let lockout: i64 = attr(&e, "lockoutTime").parse().unwrap_or(0);
             LdapUser {
                 dn: e.dn.clone(),
                 username: attr(&e, "sAMAccountName"),
@@ -145,6 +152,8 @@ pub async fn list_users(ldap: &mut ldap3::Ldap, base_dn: &str) -> LdapResult<Vec
                 display_name: attr(&e, "displayName"),
                 email: attr(&e, "mail"),
                 enabled: (uac & 2) == 0,
+                locked: lockout != 0,
+                bad_pwd_count: attr(&e, "badPwdCount").parse().unwrap_or(0),
             }
         })
         .filter(|u| !u.username.is_empty())
@@ -317,6 +326,52 @@ pub async fn set_user_enabled(
         .map_err(|e| e.to_string())?
         .success()
         .map_err(|e| format!("Failed to change account state: {}", e))?;
+    Ok(())
+}
+
+// ── reset password ─────────────────────────────────────────────────────────────
+
+/// Set a new password for a user. Requires an LDAPS (or sign/seal) connection,
+/// same as initial password set. When `force_change` is true the user must
+/// change the password at next logon (pwdLastSet=0); otherwise it is marked as
+/// freshly set (pwdLastSet=-1).
+pub async fn reset_password(
+    ldap: &mut ldap3::Ldap,
+    base_dn: &str,
+    username: &str,
+    new_password: &str,
+    force_change: bool,
+) -> LdapResult<()> {
+    let dn = find_user_dn(ldap, base_dn, username).await?;
+    let pwd_last_set = if force_change { "0" } else { "-1" };
+    let mods: Vec<Mod<Vec<u8>>> = vec![
+        Mod::Replace(sv("unicodePwd"), HashSet::from([encode_password(new_password)])),
+        Mod::Replace(sv("pwdLastSet"), HashSet::from([sv(pwd_last_set)])),
+    ];
+    ldap.modify(&dn, mods)
+        .await
+        .map_err(|e| e.to_string())?
+        .success()
+        .map_err(|e| format!("Failed to reset password (requires LDAPS): {}", e))?;
+    Ok(())
+}
+
+// ── unlock account ─────────────────────────────────────────────────────────────
+
+/// Clear an account lockout by resetting lockoutTime to 0.
+pub async fn unlock_user(
+    ldap: &mut ldap3::Ldap,
+    base_dn: &str,
+    username: &str,
+) -> LdapResult<()> {
+    let dn = find_user_dn(ldap, base_dn, username).await?;
+    let mods: Vec<Mod<Vec<u8>>> =
+        vec![Mod::Replace(sv("lockoutTime"), HashSet::from([sv("0")]))];
+    ldap.modify(&dn, mods)
+        .await
+        .map_err(|e| e.to_string())?
+        .success()
+        .map_err(|e| format!("Failed to unlock account: {}", e))?;
     Ok(())
 }
 
@@ -548,6 +603,8 @@ pub async fn list_group_members(
                     display_name: attr(&e, "displayName"),
                     email: attr(&e, "mail"),
                     enabled: (uac & 2) == 0,
+                    locked: false, // lock status not shown in member lists
+                    bad_pwd_count: 0,
                 });
             }
         }
